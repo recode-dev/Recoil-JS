@@ -71,10 +71,29 @@ export function vtableOf(pointer)
     return pointer.readPointer();
 }
 
+var _projVtable = null;
+
+export function projectileVtable()
+{
+    return _projVtable;
+}
+
+export function learnProjectileVtable(vtable)
+{
+    if (vtable && !vtable.isNull()) _projVtable = vtable;
+    return _projVtable;
+}
+
 export function isProjectileData(data)
 {
-    if (data.isNull()) return false;
-    return vtableOf(data).equals(constant("VTABLE_PROJECTILE_DATA"));
+    if (!data || data.isNull()) return false;
+    const vtable = vtableOf(data);
+    if (vtable.equals(constant("VTABLE_PROJECTILE_DATA")))
+    {
+        _projVtable = vtable;
+        return true;
+    }
+    return _projVtable !== null && vtable.equals(_projVtable);
 }
 
 export function objectManager(battle)

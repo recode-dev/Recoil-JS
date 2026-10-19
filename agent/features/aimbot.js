@@ -10,7 +10,8 @@ import
 from "../core/functions.js";
 import
 {
-    objects
+    objects,
+    isProjectileData
 }
 from "../core/scanner.js";
 import
@@ -461,6 +462,7 @@ export function update(now)
         {
             data = null;
         }
+        if (data && isProjectileData(data)) continue;
         const x = getX(item);
         const y = getY(item);
         seen.add(gid);

@@ -58,6 +58,11 @@ import
     hooksFired
 }
 from "./core/libs.js";
+import
+{
+    projectileVtable
+}
+from "./core/scanner.js";
 
 var timer = null;
 var interval = 8;
@@ -175,6 +180,15 @@ function probe()
         report.stamp = stampValue();
         report.failed = failedHooks().length;
         report.fired = hooksFired();
+        try
+        {
+            const vt = projectileVtable();
+            report.projVtable = vt ? vt.toString() : null;
+        }
+        catch (e)
+        {
+            report.projVtable = "error";
+        }
     }
     catch (e)
     {
@@ -245,7 +259,7 @@ function boot()
 {
     raw("boot start",
     {
-        version: "1.2.0"
+        version: "1.3.0"
     });
     stage("log", () =>
     {

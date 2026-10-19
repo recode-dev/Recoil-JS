@@ -13,6 +13,8 @@ import
 {
     objects,
     isProjectileData,
+    learnProjectileVtable,
+    vtableOf,
     blockedMove,
     grid
 }
@@ -156,7 +158,29 @@ export function init(options)
 function threat(item)
 {
     const data = getData(item);
-    if (!isProjectileData(data)) return null;
+    if (!data || data.isNull()) return null;
+    let loose = false;
+    if (isProjectileData(data))
+    {
+        learnProjectileVtable(vtableOf(data));
+    }
+    else
+    {
+        let speed = 0;
+        let radius = 0;
+        try
+        {
+            speed = getSpeed(data) | 0;
+            radius = getRadius(data) | 0;
+        }
+        catch (e)
+        {
+            return null;
+        }
+        if (speed < 1200 || speed > 20000 || radius < 0 || radius > 4000) return null;
+        loose = true;
+        learnProjectileVtable(vtableOf(data));
+    }
     const speed = i32At(data, off("LogicProjectileData_speed")) || getSpeed(data);
     if (speed <= 0) return null;
     const px = getX(item);
@@ -183,7 +207,8 @@ function threat(item)
         uy: dy / len,
         area: hasArea ? i32At(area, off("AreaEffectData_radius")) || areaRadius(area) : 0,
         areaTime: hasArea ? i32At(area, off("AreaEffectData_activeTimeMs")) || areaTime(area) : 0,
-        name: dataName(item) || nameOf(data)
+        name: dataName(item) || nameOf(data),
+        loose
     };
 }
 
