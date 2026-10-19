@@ -21,7 +21,8 @@ import
 from "../core/scanner.js";
 import
 {
-    projectileAddrs
+    projectileAddrs,
+    noteFired
 }
 from "../core/libs.js";
 import
@@ -149,6 +150,7 @@ export function init(options)
             onLeave()
             {
                 config.stamp = Date.now();
+                noteFired("LogicProjectileClient_updateMotion");
             }
         }));
         logInfo("autododge ready");
@@ -223,7 +225,15 @@ export function scan()
     const sy = getY(self);
     const found = [];
     const live = projectileAddrs();
-    const source = live.length ? live.map((address) => ptr(address)) : objects(bm);
+    const source = live.map((address) => ptr(address));
+    const known = new Set(live);
+    for (const item of objects(bm))
+    {
+        const key = item.toString();
+        if (known.has(key)) continue;
+        known.add(key);
+        source.push(item);
+    }
     for (const item of source)
     {
         const info = threat(item);

@@ -28,7 +28,8 @@ var fired =
     LogicProjectileClient_destruct: 0,
     LogicTile__setData: 0,
     BattleScreen_activateSkill: 0,
-    BattleScreen_getClosestTargetForAutoshoot: 0
+    BattleScreen_getClosestTargetForAutoshoot: 0,
+    LogicProjectileClient_updateMotion: 0
 };
 
 function attachWith(resolve, label, callbacks)
