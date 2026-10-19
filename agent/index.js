@@ -17,7 +17,7 @@ import
 {
     initInput
 }
-from "./core/input.js";
+from "./core/commands.js";
 import
 {
     init as initTables,
@@ -56,7 +56,7 @@ import
     lastSkill,
     stampValue
 }
-from "./core/hooks.js";
+from "./core/libs.js";
 
 var timer = null;
 var interval = 8;

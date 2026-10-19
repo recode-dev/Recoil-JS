@@ -20,7 +20,7 @@ import
 {
     projectileAddrs
 }
-from "../core/hooks.js";
+from "../core/libs.js";
 import
 {
     logInfo
@@ -64,7 +64,7 @@ import
 {
     sendClientInput
 }
-from "../core/input.js";
+from "../core/commands.js";
 
 var getX = null;
 var getY = null;

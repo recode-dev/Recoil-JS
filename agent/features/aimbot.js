@@ -53,7 +53,7 @@ import
 {
     sendClientInput
 }
-from "../core/input.js";
+from "../core/commands.js";
 
 var getOwnCharacter = null;
 var getX = null;

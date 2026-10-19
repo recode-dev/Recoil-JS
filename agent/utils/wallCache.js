@@ -3,7 +3,7 @@ import
     wallsDirty,
     wallsClean
 }
-from "../core/hooks.js";
+from "../core/libs.js";
 import
 {
     tileGrid,
