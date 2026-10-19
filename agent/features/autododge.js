@@ -13,7 +13,8 @@ import
 {
     objects,
     isProjectileData,
-    isProjectile
+    blockedMove,
+    grid
 }
 from "../core/scanner.js";
 import
@@ -42,7 +43,9 @@ from "../helpers/dodge_kinds.js";
 import
 {
     nameOf,
-    spawnAreaEffect,
+    dataOf,
+    moveSpeed,
+    collisionRadius,
     areaRadius,
     areaTime,
     dataName
@@ -50,14 +53,14 @@ import
 from "../core/dataTables.js";
 import
 {
-    clearPath,
     ensure
 }
 from "../utils/wallCache.js";
 import
 {
     battle,
-    ownCharacter
+    ownCharacter,
+    predict
 }
 from "./aimbot.js";
 import
@@ -65,6 +68,24 @@ import
     sendClientInput
 }
 from "../core/commands.js";
+
+const MOVE_TYPE = 2;
+const TILE = 64;
+const AWARE = 3200;
+const RANGE_FALLBACK = 2800;
+const TICK_MS = 16;
+const DIR_COUNT = 48;
+const SKIN = 50;
+const LOCK_MS = 130;
+const REACH = 600;
+const HORIZON_S = 1;
+const KEEP_BAND = 120;
+const MOMENTUM = 100;
+const ENGAGE = 40;
+const RELEASE_GRACE_MS = 120;
+const WALL_HIT = 9000;
+const PROBE_N = 3;
+const PROBE_T = 0.35;
 
 var getX = null;
 var getY = null;
@@ -74,13 +95,40 @@ var getRadius = null;
 var isBeam = null;
 var getTargetX = null;
 var hooks = [];
+var _ring = [];
+var _scoreBuf = [];
+var _heading = null;
+var _headingIdx = -1;
+var _holdUntil = 0;
+var _lastDangerTs = 0;
+var _lastTick = 0;
 var config =
 {
     range: 900,
     horizon: 0.45,
     step: 1.0,
-    moveType: 2
+    moveType: MOVE_TYPE,
+    skin: SKIN,
+    engage: ENGAGE
 };
+
+function buildRing()
+{
+    _ring.length = 0;
+    for (let i = 0; i < DIR_COUNT; i++)
+    {
+        const angle = Math.PI * 2 * i / DIR_COUNT;
+        _ring.push(
+        {
+            x: Math.cos(angle),
+            y: Math.sin(angle)
+        });
+    }
+    _scoreBuf = new Array(DIR_COUNT).fill(0);
+    _headingIdx = -1;
+}
+
+buildRing();
 
 export function init(options)
 {
@@ -165,38 +213,171 @@ export function scan()
     return found;
 }
 
+function segmentDistance(px, py, ax, ay, bx, by)
+{
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lengthSq = dx * dx + dy * dy;
+    let t = lengthSq < 1e-6 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lengthSq;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
+function selfBody()
+{
+    const self = ownCharacter();
+    if (!self) return 60;
+    try
+    {
+        const value = collisionRadius(dataOf(self)) | 0;
+        return value > 0 ? value : 60;
+    }
+    catch (e)
+    {
+        return 60;
+    }
+}
+
+function selfSpeed()
+{
+    const self = ownCharacter();
+    if (!self) return 720;
+    try
+    {
+        const value = moveSpeed(dataOf(self)) | 0;
+        return value > 0 ? value : 720;
+    }
+    catch (e)
+    {
+        return 720;
+    }
+}
+
+function hazards(bodyR)
+{
+    const out = [];
+    const list = scan();
+    for (const item of list)
+    {
+        const spec = kindOf(item.name);
+        const fit = fitOf(item.name);
+        const grow = spec && spec.growR > 0 ? spec.growR : 0;
+        const shotR = (item.radius > 0 ? item.radius : 100) + grow;
+        const rad = shotR + bodyR + fit.pad + shotR * fit.grow;
+        let maxRange = spec && spec.maxRange > 0 ? spec.maxRange : RANGE_FALLBACK;
+        if (spec && spec.chargedRange > 0 && item.speed > 3500) maxRange = spec.chargedRange;
+        let left = Math.hypot(item.tx - item.x, item.ty - item.y);
+        if (spec && spec.reachAdj) maxRange += spec.reachAdj;
+        if (left > maxRange) left = maxRange;
+        if (left <= 10) continue;
+        const vx = item.ux * item.speed;
+        const vy = item.uy * item.speed;
+        if (!isFinite(vx) || !isFinite(vy)) continue;
+        out.push(
+        {
+            x: item.x,
+            y: item.y,
+            vx,
+            vy,
+            rad,
+            left,
+            pathLen: left,
+            until: 0,
+            name: item.name || "",
+            speed: item.speed
+        });
+    }
+    return out;
+}
+
+function clearance(list, myX, myY, mvx, mvy)
+{
+    let minClear = Infinity;
+    for (const item of list)
+    {
+        const speed = Math.hypot(item.vx, item.vy);
+        let maxT = HORIZON_S;
+        if (speed > 1) maxT = Math.min(maxT, item.left / speed);
+        if (item.until > 0) maxT = Math.min(maxT, item.until);
+        const relx = item.x - myX;
+        const rely = item.y - myY;
+        const vrx = item.vx - mvx;
+        const vry = item.vy - mvy;
+        const vv = vrx * vrx + vry * vry;
+        let cx;
+        let cy;
+        if (vv < 1e-6)
+        {
+            cx = relx;
+            cy = rely;
+        }
+        else
+        {
+            let ts = -(relx * vrx + rely * vry) / vv;
+            if (ts < 0) ts = 0;
+            else if (ts > maxT) ts = maxT;
+            cx = relx + vrx * ts;
+            cy = rely + vry * ts;
+        }
+        const value = Math.sqrt(cx * cx + cy * cy) - item.rad;
+        if (value < minClear) minClear = value;
+    }
+    return minClear;
+}
+
+function wallAhead(myX, myY, dir, speed, bodyR)
+{
+    const step = speed * PROBE_T;
+    let raw = 0;
+    for (let s = 1; s <= PROBE_N; s++)
+    {
+        const px = myX + dir.x * step * s;
+        const py = myY + dir.y * step * s;
+        if (blockedMove(px / TILE | 0, py / TILE | 0)) raw += WALL_HIT * (PROBE_N - s + 1);
+    }
+    return raw;
+}
+
+function clampTarget(x, y)
+{
+    const map = grid();
+    if (!map) return {
+        x,
+        y
+    };
+    const maxX = map.width * TILE - 1;
+    const maxY = map.height * TILE - 1;
+    let nx = x;
+    let ny = y;
+    if (nx < 0) nx = 0;
+    if (nx > maxX) nx = maxX;
+    if (ny < 0) ny = 0;
+    if (ny > maxY) ny = maxY;
+    return {
+        x: nx,
+        y: ny
+    };
+}
+
+function clearHeading()
+{
+    _heading = null;
+    _headingIdx = -1;
+    _holdUntil = 0;
+}
+
+export function getDodgeDir()
+{
+    return _heading;
+}
+
 export function dodgeVector()
 {
-    const threats = scan();
-    if (!threats.length) return null;
-    const first = threats[0];
-    const fit = fitOf(first.name);
-    const push = (first.radius + fit.pad) * fit.grow * config.step;
-    const sides = [
-    {
-        dx: -first.uy * push,
-        dy: first.ux * push
-    },
-    {
-        dx: first.uy * push,
-        dy: -first.ux * push
-    }];
-    for (const side of sides)
-    {
-        const x = Math.round(first.tx + side.dx);
-        const y = Math.round(first.ty + side.dy);
-        if (clearPath(first.x, first.y, x, y)) return {
-            threat: first,
-            kind: kindOf(first.name),
-            dx: Math.round(side.dx),
-            dy: Math.round(side.dy)
-        };
-    }
+    if (!_heading) return null;
     return {
-        threat: first,
-        kind: kindOf(first.name),
-        dx: Math.round(sides[0].dx),
-        dy: Math.round(sides[0].dy)
+        dx: Math.round(_heading.x * REACH),
+        dy: Math.round(_heading.y * REACH)
     };
 }
 
@@ -207,12 +388,78 @@ export function step()
     if (!bm) return false;
     const self = ownCharacter();
     if (!self) return false;
-    const vector = dodgeVector();
-    if (!vector) return false;
-    const x = getX(self) + vector.dx;
-    const y = getY(self) + vector.dy;
-    sendClientInput(bm, config.moveType, x, y);
-    return true;
+    const now = Date.now();
+    if (now - _lastTick < TICK_MS) return false;
+    _lastTick = now;
+    const myX = getX(self);
+    const myY = getY(self);
+    const speed = selfSpeed();
+    const bodyR = selfBody();
+    const list = hazards(bodyR);
+    if (!list.length)
+    {
+        if (_heading && now - _lastDangerTs > RELEASE_GRACE_MS) clearHeading();
+        return false;
+    }
+    const stayClear = clearance(list, myX, myY, 0, 0);
+    const inDanger = stayClear < config.engage;
+    if (inDanger) _lastDangerTs = now;
+    if (!inDanger && (!_heading || now - _lastDangerTs > RELEASE_GRACE_MS))
+    {
+        if (_heading) clearHeading();
+        return false;
+    }
+    const prevIdx = _headingIdx >= 0 && _headingIdx < _ring.length ? _headingIdx : -1;
+    const prevDir = prevIdx >= 0 ? _ring[prevIdx] : null;
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < _ring.length; i++)
+    {
+        const dir = _ring[i];
+        let score = clearance(list, myX, myY, speed * dir.x, speed * dir.y);
+        score -= wallAhead(myX, myY, dir, speed, bodyR);
+        if (prevDir) score += MOMENTUM * (dir.x * prevDir.x + dir.y * prevDir.y);
+        _scoreBuf[i] = score;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestIdx = i;
+        }
+    }
+    let chosenIdx = bestIdx;
+    if (prevIdx >= 0 && now < _holdUntil && chosenIdx !== prevIdx)
+    {
+        if (_scoreBuf[prevIdx] + KEEP_BAND >= _scoreBuf[chosenIdx]) chosenIdx = prevIdx;
+        else _holdUntil = now + LOCK_MS;
+    }
+    else if (now >= _holdUntil)
+    {
+        _holdUntil = now + LOCK_MS;
+    }
+    if (_scoreBuf[chosenIdx] <= stayClear)
+    {
+        if (_heading) clearHeading();
+        return false;
+    }
+    const chosen = _ring[chosenIdx];
+    const previous = _headingIdx;
+    _headingIdx = chosenIdx;
+    _heading = chosen;
+    const target = clampTarget(Math.round(myX + chosen.x * REACH), Math.round(myY + chosen.y * REACH));
+    predict(target.x, target.y);
+    const ok = sendClientInput(bm, config.moveType, target.x, target.y);
+    if (chosenIdx !== previous)
+    {
+        logInfo("autododge dodge",
+        {
+            name: list[0].name,
+            x: target.x,
+            y: target.y,
+            threats: list.length,
+            sent: ok
+        });
+    }
+    return ok;
 }
 
 export function toggle(value)

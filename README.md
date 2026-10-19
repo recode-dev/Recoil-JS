@@ -26,6 +26,10 @@ agent/helpers/             lead table, dodge kinds and fits
 agent/utils/               logger, flags, names, crypto, wall cache
 ```
 
+## Signing
+
+Every `ClientInput` goes out signed. `BattleMode_hashEnabled` is checked first: when it is 0 the input is sent as-is. Otherwise the agent reads the 16-byte `BattleMode_hashKey`, builds the 20-byte message from the command bytes and the type constant from `ClientInput_typeConstantTable`, folds it through the two mask tables (`ClientInput_hashInnerMask`, `ClientInput_hashOuterMask`) with `sha256`, and writes the 16-bit token to `ClientInput_token` (0x34) before `addInput`.
+
 ## Log
 
 No RPC and no host required. Everything goes to one file inside the app sandbox:

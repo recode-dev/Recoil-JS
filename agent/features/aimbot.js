@@ -5,14 +5,12 @@ import
     off,
     i32,
     ptr32,
-    i32At,
-    ptrAt
+    i32At
 }
 from "../core/functions.js";
 import
 {
-    objects,
-    lineClear
+    objects
 }
 from "../core/scanner.js";
 import
@@ -38,11 +36,13 @@ import
     nameOf,
     dataOf,
     collisionRadius,
+    moveSpeed,
     castingRange,
     isImmune,
     dead,
     weaponSkill,
-    skillData
+    skillData,
+    projectileOfSkill
 }
 from "../core/dataTables.js";
 import
@@ -62,19 +62,46 @@ import
 }
 from "../core/libs.js";
 
+const WATCH_MS = 80;
+const STRIDE = 40;
+const FLIGHT_CAP = 1.15;
+const SPEED_PAD = 1.35;
+const FALLBACK_SPEED = 4000;
+const FALLBACK_RADIUS = 300;
+const SHOT_CACHE_MS = 250;
+const LOS_TTL_MS = 100;
+const LOS_PURGE_MS = 500;
+const ATTACK_TYPE = 0xa;
+
+const SKIP_SKILLS = new Set([
+    "ShamanUlti", "MechanicUlti", "ClusterBombDudeUlti", "ArcadeUlti", "ArtilleryDudeUlti",
+    "SoulCollectorUlti", "MinigunDudeUlti", "KnightUlti", "DuplicatorUlti", "TwinsUlti",
+    "SpawnerDudeUlti", "ConductorUlti", "MeepleUlti", "FleaUlti", "ReviverUlti", "VoodooUlti",
+    "ShadowdemonUlti", "RollerUlti", "SniperUlti", "EnragerUlti", "PowerLevelerUlti",
+    "DoorManUlti", "ConductorUltiSpawn"
+]);
+
 var getOwnCharacter = null;
 var getX = null;
 var getY = null;
 var getOwnTeam = null;
+var getGid = null;
+var projectileSpeed = null;
+var projectileRadius = null;
 var setPrediction = null;
 var captured = null;
 var bestPtr = null;
+var _live = new Map();
+var _losMemo = new Map();
+var _scrubTs = 0;
+var _shotTs = 0;
+var _shot = null;
 var config =
 {
     range: 1200,
     lead: true,
     wallCheck: true,
-    attackType: 0xa
+    attackType: ATTACK_TYPE
 };
 
 export function battle()
@@ -106,7 +133,7 @@ export function ownCharacter()
     }
 }
 
-function attach(label, callbacks)
+function attachHook(label, callbacks)
 {
     try
     {
@@ -146,7 +173,7 @@ export function installAimHooks()
 {
     return setupSafe("aim hooks", () =>
     {
-        attach("BattleScreen_activateSkill",
+        attachHook("BattleScreen_activateSkill",
         {
             onEnter(args)
             {
@@ -158,7 +185,7 @@ export function installAimHooks()
                 bestPtr = point.ptr;
             }
         });
-        attach("BattleScreen_getClosestTargetForAutoshoot",
+        attachHook("BattleScreen_getClosestTargetForAutoshoot",
         {
             onLeave(retval)
             {
@@ -177,60 +204,323 @@ export function init(options)
     {
         getX = i32("LogicGameObjectClient_getX");
         getY = i32("LogicGameObjectClient_getY");
+        getGid = i32("LogicGameObjectClient_getGlobalID");
+        projectileSpeed = i32("LogicProjectileData_getSpeed");
+        projectileRadius = i32("LogicProjectileData_getRadius");
         if (options) Object.assign(config, options);
         logInfo("aimbot ready");
     });
 }
 
-function teamOf(pointer)
+function gidOf(object)
 {
-    return i32At(pointer, off("GameObj_team"));
+    try
+    {
+        return getGid(object);
+    }
+    catch (e)
+    {
+        return 0;
+    }
 }
 
-function alive(pointer)
+function bearing(ax, ay, bx, by)
 {
-    if (dead(pointer)) return false;
-    if (isImmune(pointer)) return false;
-    return true;
+    return (Math.atan2(by - ay, bx - ax) * 180 / Math.PI + 360) % 360;
 }
 
-function rangeOf(character)
+function sight(x0, y0, x1, y1)
 {
+    const key = ((x0 / 64 | 0) & 127) << 21 | ((y0 / 64 | 0) & 127) << 14 | ((x1 / 64 | 0) & 127) << 7 | (y1 / 64 | 0) & 127;
+    const now = Date.now();
+    const hit = _losMemo.get(key);
+    if (hit !== undefined && now - hit.ts < LOS_TTL_MS) return hit.v;
+    const value = clearShot(x0, y0, x1, y1);
+    _losMemo.set(key,
+    {
+        v: value,
+        ts: now
+    });
+    return value;
+}
+
+function shotOf(character)
+{
+    const empty = {
+        skip: false,
+        reach: 0,
+        vel: FALLBACK_SPEED,
+        rad: FALLBACK_RADIUS,
+        live: false,
+        name: ""
+    };
     try
     {
         const skill = weaponSkill(character);
-        if (!skill || skill.isNull()) return config.range;
+        if (!skill || skill.isNull()) return empty;
         const data = skillData(skill);
-        if (!data) return config.range;
-        const value = castingRange(data);
-        if (value <= 0) return config.range;
-        return value;
+        if (!data) return empty;
+        const name = nameOf(data) || "";
+        if (SKIP_SKILLS.has(name)) return {
+            skip: true,
+            reach: 0,
+            vel: 0,
+            rad: FALLBACK_RADIUS,
+            live: false,
+            name
+        };
+        let reach = 0;
+        const tiles = castingRange(data) | 0;
+        if (tiles > 0) reach = tiles * 100;
+        let vel = 0;
+        let rad = FALLBACK_RADIUS;
+        const projectile = projectileOfSkill(data);
+        if (projectile)
+        {
+            vel = projectileSpeed(projectile) | 0;
+            const value = projectileRadius(projectile) | 0;
+            if (value > 0) rad = value;
+        }
+        return {
+            skip: false,
+            reach,
+            vel: vel > 0 ? vel : FALLBACK_SPEED,
+            rad,
+            live: vel > 0,
+            name
+        };
     }
     catch (e)
     {
-        return config.range;
+        return empty;
     }
 }
 
-function dataOfSafe(object)
+function shotNow()
+{
+    const now = Date.now();
+    if (_shot && now - _shotTs < SHOT_CACHE_MS) return _shot;
+    const self = ownCharacter();
+    if (!self) return _shot || {
+        skip: false,
+        reach: 0,
+        vel: FALLBACK_SPEED,
+        rad: FALLBACK_RADIUS,
+        live: false,
+        name: ""
+    };
+    _shot = shotOf(self);
+    _shotTs = now;
+    return _shot;
+}
+
+function selfName()
 {
     try
     {
-        const data = dataOf(object);
-        if (!data || data.isNull()) return null;
-        return data;
+        const self = ownCharacter();
+        if (!self) return "";
+        return nameOf(dataOf(self)) || "";
     }
     catch (e)
     {
-        return null;
+        return "";
     }
 }
 
-export function predict(x, y)
+function motion(row, x, y, now)
+{
+    if (!row.markTs)
+    {
+        row.markTs = now;
+        row.markX = x;
+        row.markY = y;
+        row.spd = 0;
+        return;
+    }
+    const dt = now - row.markTs;
+    if (dt < WATCH_MS) return;
+    const dx = x - row.markX;
+    const dy = y - row.markY;
+    const gone = Math.hypot(dx, dy);
+    if (gone >= STRIDE)
+    {
+        let spd = gone / (dt / 1000);
+        if (!(row.gait > 0)) spd = 0;
+        else
+        {
+            const cap = row.gait * SPEED_PAD;
+            if (spd > cap) spd = cap;
+        }
+        row.spd = spd;
+        if (spd > 0) row.yaw = bearing(row.markX, row.markY, x, y);
+    }
+    else
+    {
+        row.spd = 0;
+    }
+    row.markTs = now;
+    row.markX = x;
+    row.markY = y;
+}
+
+function point(ox, oy, row, shot, lead)
+{
+    if (!row) return null;
+    let x = row.x;
+    let y = row.y;
+    if (shot && shot.live && shot.vel > 0 && lead > 0 && row.spd > 0 && row.gait > 0)
+    {
+        const vel = shot.vel;
+        const scale = lead / 100;
+        let flight = Math.hypot(row.x - ox, row.y - oy) / vel;
+        const pocket = (row.rad || 0) + (shot.rad || 0);
+        if (row.spd * flight > pocket)
+        {
+            const radians = row.yaw * Math.PI / 180;
+            const ux = Math.cos(radians);
+            const uy = Math.sin(radians);
+            for (let i = 0; i < 3; i++)
+            {
+                flight = Math.hypot(x - ox, y - oy) / vel;
+                if (flight > FLIGHT_CAP) flight = FLIGHT_CAP;
+                x = row.x + ux * row.spd * flight * scale;
+                y = row.y + uy * row.spd * flight * scale;
+            }
+            if (!isFinite(x) || !isFinite(y))
+            {
+                x = row.x;
+                y = row.y;
+            }
+        }
+    }
+    if (shot && shot.reach > 0)
+    {
+        const dx = x - ox;
+        const dy = y - oy;
+        const dist = Math.hypot(dx, dy);
+        const max = shot.reach + (row.rad || 0);
+        if (dist > max && dist > 1)
+        {
+            x = ox + dx * max / dist;
+            y = oy + dy * max / dist;
+        }
+    }
+    return {
+        x: Math.round(x),
+        y: Math.round(y)
+    };
+}
+
+function nearest(ox, oy, shot)
+{
+    let best = null;
+    let bestCost = Infinity;
+    const reach = shot && shot.reach > 0 ? shot.reach : config.range;
+    for (const row of _live.values())
+    {
+        const dist = Math.hypot(row.x - ox, row.y - oy);
+        if (reach > 0 && dist > reach + (row.rad || 0)) continue;
+        if (config.wallCheck && !sight(ox, oy, row.x, row.y)) continue;
+        if (dist < bestCost)
+        {
+            bestCost = dist;
+            best = row;
+        }
+    }
+    return best;
+}
+
+export function update(now)
 {
     const bm = battle();
-    if (!bm || !setPrediction) return false;
-    setPrediction(bm, x, y, true);
+    if (!bm) return false;
+    const self = ownCharacter();
+    if (!self) return false;
+    if (now === undefined) now = Date.now();
+    ensure(bm);
+    const own = getOwnTeam(bm);
+    const seen = new Set();
+    for (const item of objects(bm))
+    {
+        if (item.equals(self)) continue;
+        if (dead(item)) continue;
+        if (isImmune(item)) continue;
+        if (i32At(item, off("GameObj_team")) === own) continue;
+        const gid = gidOf(item);
+        if (!gid) continue;
+        let data = null;
+        try
+        {
+            data = dataOf(item);
+        }
+        catch (e)
+        {
+            data = null;
+        }
+        const x = getX(item);
+        const y = getY(item);
+        seen.add(gid);
+        let row = _live.get(gid);
+        if (!row)
+        {
+            row = {
+                gid,
+                ptr: item,
+                x,
+                y,
+                rad: 0,
+                gait: 0,
+                yaw: 0,
+                spd: 0,
+                markTs: 0,
+                markX: x,
+                markY: y
+            };
+            _live.set(gid, row);
+        }
+        row.ptr = item;
+        row.x = x;
+        row.y = y;
+        if (data)
+        {
+            const radius = collisionRadius(data) | 0;
+            if (radius > 0) row.rad = radius;
+            const gait = moveSpeed(data) | 0;
+            if (gait > 0) row.gait = gait;
+        }
+        motion(row, x, y, now);
+    }
+    for (const gid of _live.keys())
+    {
+        if (!seen.has(gid)) _live.delete(gid);
+    }
+    if (bestPtr && _live.size)
+    {
+        let alive = false;
+        for (const row of _live.values())
+        {
+            if (row.ptr && row.ptr.equals(bestPtr))
+            {
+                alive = true;
+                break;
+            }
+        }
+        if (!alive) bestPtr = null;
+    }
+    if (!bestPtr && _live.size)
+    {
+        const pick = nearest(getX(self), getY(self), shotNow());
+        if (pick) bestPtr = pick.ptr;
+    }
+    if (now - _scrubTs > 1000)
+    {
+        for (const [key, value] of _losMemo)
+        {
+            if (now - value.ts > LOS_PURGE_MS) _losMemo.delete(key);
+        }
+        _scrubTs = now;
+    }
     return true;
 }
 
@@ -240,34 +530,15 @@ export function pickTarget()
     if (!bm) return null;
     const self = ownCharacter();
     if (!self) return null;
-    const own = getOwnTeam(bm);
-    const selfX = getX(self);
-    const selfY = getY(self);
-    const reach = rangeOf(self);
-    ensure(bm);
-    let best = null;
-    let bestDist = reach * reach;
-    for (const item of objects(bm))
-    {
-        if (item.equals(self)) continue;
-        if (!alive(item)) continue;
-        if (teamOf(item) === own) continue;
-        const x = getX(item);
-        const y = getY(item);
-        const d = (selfX - x) * (selfX - x) + (selfY - y) * (selfY - y);
-        if (d >= bestDist) continue;
-        if (config.wallCheck && !clearShot(selfX, selfY, x, y)) continue;
-        bestDist = d;
-        best = item;
-    }
-    if (!best) return null;
-    const data = dataOfSafe(best);
+    const row = nearest(getX(self), getY(self), shotNow());
+    if (!row) return null;
     return {
-        ptr: best,
-        x: getX(best),
-        y: getY(best),
-        name: data ? nameOf(data) : "",
-        radius: data ? collisionRadius(data) : 0
+        ptr: row.ptr,
+        x: row.x,
+        y: row.y,
+        name: "",
+        radius: row.rad,
+        gid: row.gid
     };
 }
 
@@ -275,21 +546,39 @@ export function aimPoint()
 {
     const bm = battle();
     if (!bm) return null;
-    const target = pickTarget();
-    if (!target) return null;
     const self = ownCharacter();
     if (!self) return null;
-    const selfX = getX(self);
-    const selfY = getY(self);
-    const lead = config.lead ? leadOf(target.name) : 0;
+    const ox = getX(self);
+    const oy = getY(self);
+    const shot = shotNow();
+    const row = nearest(ox, oy, shot);
+    if (!row) return null;
+    const lead = config.lead ? leadOf(selfName()) : 0;
+    const at = point(ox, oy, row, shot, lead);
+    if (!at) return null;
     return {
-        ptr: target.ptr,
-        x: target.x,
-        y: target.y,
+        ptr: row.ptr,
+        x: at.x,
+        y: at.y,
         lead,
-        selfX,
-        selfY
+        selfX: ox,
+        selfY: oy
     };
+}
+
+export function predict(x, y)
+{
+    const bm = battle();
+    if (!bm || !setPrediction) return false;
+    try
+    {
+        setPrediction(bm, x, y, true);
+        return true;
+    }
+    catch (e)
+    {
+        return false;
+    }
 }
 
 export function fire()
@@ -297,11 +586,11 @@ export function fire()
     if (!state.aimbot) return false;
     const bm = battle();
     if (!bm) return false;
-    const point = aimPoint();
-    if (!point) return false;
-    const ok = sendClientInput(bm, config.attackType, point.x, point.y);
+    const pointNow = aimPoint();
+    if (!pointNow) return false;
+    const ok = sendClientInput(bm, config.attackType, pointNow.x, pointNow.y);
     if (!ok) logWarn("aimbot fire failed");
-    else predict(point.x, point.y);
+    else predict(pointNow.x, pointNow.y);
     return ok;
 }
 
@@ -313,5 +602,6 @@ export function toggle(value)
 
 export function tick()
 {
+    update();
     return fire();
 }

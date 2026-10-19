@@ -19,9 +19,19 @@ import
 from "./core/commands.js";
 import
 {
-    init as initTables
+    init as initTables,
+    signature,
+    clientType,
+    commandScale,
+    ownIndex,
+    ownTeam
 }
 from "./core/dataTables.js";
+import
+{
+    lastToken
+}
+from "./core/commands.js";
 import
 {
     logInfo,
@@ -176,6 +186,10 @@ function probe()
         {
             report.objects = objects(bm).length;
             report.own = aimbot.ownCharacter() ? true : false;
+            report.ownIndex = ownIndex(bm);
+            report.ownTeam = ownTeam(bm);
+            report.signature = signature(bm);
+            report.token = lastToken();
         }
     }
     catch (e)
@@ -229,7 +243,7 @@ function boot()
 {
     raw("boot start",
     {
-        version: "1.1.0"
+        version: "1.2.0"
     });
     stage("log", () =>
     {
@@ -241,6 +255,17 @@ function boot()
         bootCore();
         initInput();
         initTables();
+    });
+    stage("tables", () =>
+    {
+        const type = clientType(2);
+        const scale = commandScale(0);
+        if (type === void 0) throw new Error("type table unreadable");
+        raw("command tables",
+        {
+            moveType: type,
+            scale
+        });
     });
     stage("battle", () => aimbot.installBattleCapture());
     stage("hooks", () => installHooks());

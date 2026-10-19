@@ -82,6 +82,7 @@ export const structs_offsets = Object.freeze(
     ClientInput_type: 0x8,
     ClientInput_x: 0xc,
     ClientInput_y: 0x10,
+    ClientInput_token: 0x34,
     ClientInput_skillData: 0x40,
 
     ScString_length: 0x4,
