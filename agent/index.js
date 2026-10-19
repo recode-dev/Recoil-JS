@@ -9,8 +9,7 @@ import
 {
     boot as bootCore,
     moduleBase,
-    objects,
-    tileGrid
+    objects
 }
 from "./core/scanner.js";
 import
@@ -20,13 +19,7 @@ import
 from "./core/commands.js";
 import
 {
-    init as initTables,
-    ownIndex,
-    ownTeam,
-    signature,
-    clientType,
-    commandScale,
-    aimPoint
+    init as initTables
 }
 from "./core/dataTables.js";
 import
@@ -34,10 +27,7 @@ import
     logInfo,
     logError,
     raw,
-    setLoggingEnabled,
-    isLoggingEnabled,
-    setEchoEnabled,
-    isEchoEnabled
+    logPath
 }
 from "./utils/logger.js";
 import
@@ -49,25 +39,36 @@ import
 from "./utils/flags.js";
 import
 {
-    build,
-    status
-}
-from "./utils/wallCache.js";
-import
-{
     install as installHooks,
     battlePtr,
     projectileCount,
     framesCount,
-    lastSkill,
-    stampValue
+    stampValue,
+    failedHooks
 }
 from "./core/libs.js";
 
 var timer = null;
 var interval = 8;
 var baseWarned = false;
-var probed = 0;
+var probes = 0;
+var probeTimer = null;
+var maxProbes = 10;
+var lastErrorAt = 0;
+var lastErrorKey = "";
+
+function reportError(label, error)
+{
+    const key = label + ":" + (error && error.message ? error.message : String(error));
+    const now = Date.now();
+    if (key === lastErrorKey && now - lastErrorAt < 2000) return;
+    lastErrorKey = key;
+    lastErrorAt = now;
+    logError(label,
+    {
+        reason: error && error.message ? error.message : String(error)
+    });
+}
 
 function loop()
 {
@@ -88,10 +89,7 @@ function loop()
         }
         catch (e)
         {
-            logError("aimbot tick",
-            {
-                reason: e.message
-            });
+            reportError("aimbot tick", e);
         }
     }
     if (state.autododge)
@@ -102,10 +100,7 @@ function loop()
         }
         catch (e)
         {
-            logError("autododge tick",
-            {
-                reason: e.message
-            });
+            reportError("autododge tick", e);
         }
     }
 }
@@ -147,11 +142,12 @@ function stage(label, callback)
 
 function probe()
 {
+    if (probes >= maxProbes) return null;
     const report =
     {
-        t: probed
+        n: probes
     };
-    probed++;
+    probes++;
     try
     {
         const base = moduleBase();
@@ -166,6 +162,7 @@ function probe()
         report.frames = framesCount();
         report.projectiles = projectileCount();
         report.stamp = stampValue();
+        report.failed = failedHooks().length;
     }
     catch (e)
     {
@@ -201,14 +198,44 @@ function probe()
     {
         report.threats = "error";
     }
+    try
+    {
+        report.state = getFlags();
+    }
+    catch (e)
+    {}
     raw("probe", report);
     return report;
 }
 
+function scheduleProbes()
+{
+    setTimeout(() => probe(), 3000);
+    setTimeout(() => probe(), 15000);
+    probeTimer = setInterval(() =>
+    {
+        if (probes >= maxProbes)
+        {
+            clearInterval(probeTimer);
+            probeTimer = null;
+            raw("probe cycle finished");
+            return;
+        }
+        probe();
+    }, 30000);
+}
+
 function boot()
 {
-    raw("boot start");
-    setLoggingEnabled(true);
+    raw("boot start",
+    {
+        version: "1.1.0"
+    });
+    stage("log", () =>
+    {
+        const path = logPath();
+        if (!path) throw new Error("log file unavailable");
+    });
     stage("core", () =>
     {
         bootCore();
@@ -224,146 +251,11 @@ function boot()
     if (!getBase()) raw("boot done without base");
     else raw("boot done",
     {
-        base: getBase().toString()
+        base: getBase().toString(),
+        path: logPath()
     });
-    setTimeout(() => probe(), 3000);
-    setTimeout(() => probe(), 15000);
+    scheduleProbes();
     return true;
-}
-
-if (typeof rpc !== "undefined" && rpc)
-{
-    rpc.exports =
-    {
-        boot,
-        start,
-        stop,
-        probe,
-        logging(value)
-        {
-            setLoggingEnabled(value);
-            return isLoggingEnabled();
-        },
-        echo(value)
-        {
-            setEchoEnabled(value);
-            return isEchoEnabled();
-        },
-        diag()
-        {
-            return JSON.stringify(probe());
-        },
-        own()
-        {
-            const self = aimbot.ownCharacter();
-            return self ? self.toString() : null;
-        },
-        base()
-        {
-            const base = moduleBase();
-            return base ? base.toString() : "0x0";
-        },
-        toggle(name, value)
-        {
-            if (name === "aimbot") return aimbot.toggle(value);
-            if (name === "autododge") return autododge.toggle(value);
-            return false;
-        },
-        flags()
-        {
-            return JSON.stringify(
-            {
-                state,
-                mask: getFlags()
-            });
-        },
-        target()
-        {
-            const point = aimbot.aimPoint();
-            if (!point) return null;
-            return JSON.stringify(
-            {
-                x: point.x,
-                y: point.y,
-                lead: point.lead
-            });
-        },
-        threats()
-        {
-            const list = autododge.scan();
-            if (!list.length) return "[]";
-            return JSON.stringify(list.map((item) =>
-            ({
-                x: item.x,
-                y: item.y,
-                speed: item.speed,
-                beam: item.beam,
-                eta: item.eta,
-                area: item.area,
-                name: item.name
-            })));
-        },
-        world()
-        {
-            const bm = aimbot.battle() || battlePtr();
-            if (!bm) return null;
-            return JSON.stringify(
-            {
-                ownIndex: ownIndex(bm),
-                ownTeam: ownTeam(bm),
-                objects: objects(bm).length,
-                projectiles: projectileCount(),
-                frames: framesCount(),
-                walls: status(),
-                signature: signature(bm),
-                moveType: clientType(2),
-                scale: commandScale(0)
-            });
-        },
-        hooks()
-        {
-            return JSON.stringify(
-            {
-                frames: framesCount(),
-                projectiles: projectileCount(),
-                stamp: stampValue(),
-                skill: lastSkill() ? lastSkill().toString() : null
-            });
-        },
-        screen(pointer)
-        {
-            return JSON.stringify(aimPoint(ptr(pointer)));
-        },
-        walls()
-        {
-            const bm = aimbot.battle();
-            if (!bm) return null;
-            build(bm);
-            return JSON.stringify(status());
-        },
-        grid()
-        {
-            const bm = aimbot.battle();
-            if (!bm) return null;
-            const map = tileGrid(bm);
-            if (!map) return null;
-            return JSON.stringify(
-            {
-                width: map.width,
-                height: map.height
-            });
-        },
-        burst(count, ms)
-        {
-            let left = count;
-            const id = setInterval(() =>
-            {
-                aimbot.fire();
-                if (--left <= 0) clearInterval(id);
-            }, ms || 16);
-            return true;
-        }
-    };
 }
 
 try

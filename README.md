@@ -26,32 +26,30 @@ agent/helpers/             lead table, dodge kinds and fits
 agent/utils/               logger, flags, names, crypto, wall cache
 ```
 
-## RPC
+## Log
+
+No RPC and no host required. Everything goes to one file inside the app sandbox:
 
 ```
-boot()
-start()
-stop()
-probe()
-diag()
-own()
-logging(value)
-echo(value)
-toggle("aimbot" | "autododge", true | false)
-flags()
-target()
-threats()
-world()
-hooks()
-walls()
-grid()
-screen(pointer)
-burst(count, ms)
+<app home>/Documents/recoil.log
 ```
+
+The path is resolved at boot through `NSHomeDirectory` + `objc_msgSend`, so it follows the install without any hardcoded container UUID. If the file cannot be created there, the agent falls back to `<app home>/tmp/recoil.log` and then `Library/Caches/recoil.log`. Writing uses Frida's `File` API, with `fopen`/`fputs` as a fallback when `File` is unavailable.
+
+The file is truncated on its own once it passes 2 MB, so an error loop cannot fill the container.
+
+To reach `Documents` from the Files app on a non-jailbroken device, the app's `Info.plist` needs:
+
+```
+UIFileSharingEnabled = true
+LSSupportsOpeningDocumentsInPlace = true
+```
+
+Without those keys the file is still written, but it is only reachable through the app itself.
 
 ## Diagnostics
 
-Logging is on by default. Every boot stage reports to both the Frida message channel and `console.log`, so a gadget build injected into the IPA shows the trace without a host attached:
+Logging is on by default and every boot stage lands in the log:
 
 ```
 boot start
@@ -71,10 +69,10 @@ boot done { base: "0x..." }
 
 The first missing line is where it stopped. A stage that reports `failed` carries the underlying reason. `hooks installed` reports how many interceptors attached and which ones refused.
 
-Two automatic probes run at 3 s and 15 s after boot and print a single snapshot:
+Probes run at 3 s, 15 s, then every 30 s until ten snapshots are written:
 
 ```
-probe { base, frames, projectiles, stamp, battle, objects, own, target, threats }
+probe { n, base, frames, projectiles, stamp, failed, battle, objects, own, target, threats, state }
 ```
 
 Reading it:
