@@ -94,13 +94,6 @@ export function init(options)
         isBeam = i32("LogicProjectileData__isBeam");
         getTargetX = i32("LogicProjectileClient_getTargetX");
         if (options) Object.assign(config, options);
-        hooks.push(Interceptor.attach(fn("LogicProjectileClient_updateTarget"),
-        {
-            onLeave()
-            {
-                config.stamp = Date.now();
-            }
-        }));
         hooks.push(Interceptor.attach(fn("LogicProjectileClient_updateMotion"),
         {
             onLeave()

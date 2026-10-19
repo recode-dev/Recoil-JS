@@ -52,7 +52,8 @@ import
     projectileCount,
     framesCount,
     lastSkill,
-    closestTarget
+    closestTarget,
+    stampValue
 }
 from "./core/hooks.js";
 import * as aimbot from "./features/aimbot.js";
@@ -198,6 +199,7 @@ rpc.exports =
         {
             frames: framesCount(),
             projectiles: projectileCount(),
+            stamp: stampValue(),
             skill: lastSkill() ? lastSkill().toString() : null,
             closest: closestTarget() ? closestTarget().toString() : null
         });

@@ -13,10 +13,12 @@ from "../utils/logger.js";
 var battle = null;
 var live = new Set();
 var frames = 0;
+var stamp = 0;
 var dirty = true;
 var closest = null;
 var skill = null;
 var attached = [];
+var closestNative = null;
 
 export function install()
 {
@@ -26,6 +28,13 @@ export function install()
         {
             battle = args[0];
             frames++;
+        }
+    }));
+    attached.push(Interceptor.attach(ic("LogicProjectileClient_updateTarget"),
+    {
+        onEnter()
+        {
+            stamp = frames;
         }
     }));
     attached.push(Interceptor.attach(ic("LogicProjectileClient_ctor"),
@@ -53,13 +62,13 @@ export function install()
             dirty = true;
         }
     }));
-    attached.push(Interceptor.attach(ic("BattleScreen_getClosestTargetForAutoshoot"),
+    closestNative = new NativeFunction(ic("BattleScreen_getClosestTargetForAutoshoot"), "pointer", ["pointer", "pointer", "pointer", "pointer"]);
+    Interceptor.replace(ic("BattleScreen_getClosestTargetForAutoshoot"), new NativeCallback(function(a, b, c, d)
     {
-        onLeave(retval)
-        {
-            closest = retval && !retval.isNull() ? retval : null;
-        }
-    }));
+        const result = closestNative(a, b, c, d);
+        closest = result && !result.isNull() ? result : null;
+        return result;
+    }, "pointer", ["pointer", "pointer", "pointer", "pointer"]));
     attached.push(Interceptor.attach(ic("BattleScreen_activateSkill"),
     {
         onEnter(args)
@@ -87,6 +96,11 @@ export function projectileAddrs()
 export function projectileCount()
 {
     return live.size;
+}
+
+export function stampValue()
+{
+    return stamp;
 }
 
 export function framesCount()
