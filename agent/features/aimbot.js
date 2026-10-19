@@ -58,7 +58,8 @@ import
 from "../core/commands.js";
 import
 {
-    battlePtr as liveBattle
+    battlePtr as liveBattle,
+    noteFired
 }
 from "../core/libs.js";
 
@@ -177,6 +178,7 @@ export function installAimHooks()
         {
             onEnter(args)
             {
+                noteFired("BattleScreen_activateSkill");
                 if (!state.aimbot) return;
                 const point = aimPoint();
                 if (!point) return;
@@ -189,6 +191,7 @@ export function installAimHooks()
         {
             onLeave(retval)
             {
+                noteFired("BattleScreen_getClosestTargetForAutoshoot");
                 if (!state.aimbot) return;
                 if (!bestPtr || bestPtr.isNull()) return;
                 retval.replace(bestPtr);

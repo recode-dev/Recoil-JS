@@ -54,7 +54,8 @@ import
     projectileCount,
     framesCount,
     stampValue,
-    failedHooks
+    failedHooks,
+    hooksFired
 }
 from "./core/libs.js";
 
@@ -173,6 +174,7 @@ function probe()
         report.projectiles = projectileCount();
         report.stamp = stampValue();
         report.failed = failedHooks().length;
+        report.fired = hooksFired();
     }
     catch (e)
     {
