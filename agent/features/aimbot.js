@@ -1,6 +1,7 @@
 import
 {
     fn,
+    ic,
     off,
     i32,
     ptr32,
@@ -35,6 +36,7 @@ from "../helpers/aim_lead.js";
 import
 {
     nameOf,
+    dataOf,
     collisionRadius,
     castingRange,
     isImmune,
@@ -54,13 +56,18 @@ import
     sendClientInput
 }
 from "../core/commands.js";
+import
+{
+    battlePtr as liveBattle
+}
+from "../core/libs.js";
 
 var getOwnCharacter = null;
 var getX = null;
 var getY = null;
 var getOwnTeam = null;
 var setPrediction = null;
-var battlePtr = null;
+var captured = null;
 var bestPtr = null;
 var config =
 {
@@ -72,7 +79,49 @@ var config =
 
 export function battle()
 {
-    return battlePtr;
+    if (captured && !captured.isNull()) return captured;
+    try
+    {
+        const live = liveBattle();
+        if (live && !live.isNull()) return live;
+    }
+    catch (e)
+    {}
+    return null;
+}
+
+export function ownCharacter()
+{
+    try
+    {
+        const bm = battle();
+        if (!bm || !getOwnCharacter) return null;
+        const self = getOwnCharacter(bm);
+        if (!self || self.isNull()) return null;
+        return self;
+    }
+    catch (e)
+    {
+        return null;
+    }
+}
+
+function attach(label, callbacks)
+{
+    try
+    {
+        Interceptor.attach(ic(label), callbacks);
+        return true;
+    }
+    catch (e)
+    {
+        logWarn("attach failed",
+        {
+            hook: label,
+            reason: e && e.message ? e.message : String(e)
+        });
+        return false;
+    }
 }
 
 export function installBattleCapture()
@@ -86,7 +135,7 @@ export function installBattleCapture()
         {
             onEnter(args)
             {
-                battlePtr = args[0];
+                captured = args[0];
             }
         });
         logInfo("battle capture installed");
@@ -97,7 +146,7 @@ export function installAimHooks()
 {
     return setupSafe("aim hooks", () =>
     {
-        Interceptor.attach(fn("BattleScreen_activateSkill"),
+        attach("BattleScreen_activateSkill",
         {
             onEnter(args)
             {
@@ -109,7 +158,7 @@ export function installAimHooks()
                 bestPtr = point.ptr;
             }
         });
-        Interceptor.attach(fn("BattleScreen_getClosestTargetForAutoshoot"),
+        attach("BattleScreen_getClosestTargetForAutoshoot",
         {
             onLeave(retval)
             {
@@ -150,7 +199,7 @@ function rangeOf(character)
     try
     {
         const skill = weaponSkill(character);
-        if (skill.isNull()) return config.range;
+        if (!skill || skill.isNull()) return config.range;
         const data = skillData(skill);
         if (!data) return config.range;
         const value = castingRange(data);
@@ -163,25 +212,41 @@ function rangeOf(character)
     }
 }
 
+function dataOfSafe(object)
+{
+    try
+    {
+        const data = dataOf(object);
+        if (!data || data.isNull()) return null;
+        return data;
+    }
+    catch (e)
+    {
+        return null;
+    }
+}
+
 export function predict(x, y)
 {
-    if (!battlePtr) return false;
-    setPrediction(battlePtr, x, y, true);
+    const bm = battle();
+    if (!bm || !setPrediction) return false;
+    setPrediction(bm, x, y, true);
     return true;
 }
 
 export function pickTarget()
 {
-    const bm = battlePtr;
+    const bm = battle();
     if (!bm) return null;
-    const self = getOwnCharacter(bm);
-    if (self.isNull()) return null;
+    const self = ownCharacter();
+    if (!self) return null;
     const own = getOwnTeam(bm);
     const selfX = getX(self);
     const selfY = getY(self);
+    const reach = rangeOf(self);
     ensure(bm);
     let best = null;
-    let bestDist = rangeOf(self) * rangeOf(self);
+    let bestDist = reach * reach;
     for (const item of objects(bm))
     {
         if (item.equals(self)) continue;
@@ -196,22 +261,24 @@ export function pickTarget()
         best = item;
     }
     if (!best) return null;
+    const data = dataOfSafe(best);
     return {
         ptr: best,
         x: getX(best),
         y: getY(best),
-        name: nameOf(best.readPointer().isNull() ? best : best),
-        radius: collisionRadius(best)
+        name: data ? nameOf(data) : "",
+        radius: data ? collisionRadius(data) : 0
     };
 }
 
 export function aimPoint()
 {
-    const bm = battlePtr;
+    const bm = battle();
     if (!bm) return null;
     const target = pickTarget();
     if (!target) return null;
-    const self = getOwnCharacter(bm);
+    const self = ownCharacter();
+    if (!self) return null;
     const selfX = getX(self);
     const selfY = getY(self);
     const lead = config.lead ? leadOf(target.name) : 0;
@@ -228,9 +295,11 @@ export function aimPoint()
 export function fire()
 {
     if (!state.aimbot) return false;
+    const bm = battle();
+    if (!bm) return false;
     const point = aimPoint();
     if (!point) return false;
-    const ok = sendClientInput(battlePtr, config.attackType, point.x, point.y);
+    const ok = sendClientInput(bm, config.attackType, point.x, point.y);
     if (!ok) logWarn("aimbot fire failed");
     else predict(point.x, point.y);
     return ok;

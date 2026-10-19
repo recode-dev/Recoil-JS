@@ -36,8 +36,7 @@ from "../utils/flags.js";
 import
 {
     kindOf,
-    fitOf,
-    FITS
+    fitOf
 }
 from "../helpers/dodge_kinds.js";
 import
@@ -57,7 +56,8 @@ import
 from "../utils/wallCache.js";
 import
 {
-    battle
+    battle,
+    ownCharacter
 }
 from "./aimbot.js";
 import
@@ -143,9 +143,11 @@ export function scan()
 {
     const bm = battle();
     if (!bm) return [];
+    const self = ownCharacter();
+    if (!self) return [];
     ensure(bm);
-    const sx = getX(bm);
-    const sy = getY(bm);
+    const sx = getX(self);
+    const sy = getY(self);
     const found = [];
     const live = projectileAddrs();
     const source = live.length ? live.map((address) => ptr(address)) : objects(bm);
@@ -168,7 +170,7 @@ export function dodgeVector()
     const threats = scan();
     if (!threats.length) return null;
     const first = threats[0];
-    const fit = FITS[fitOf(first.name)] || FITS.broad;
+    const fit = fitOf(first.name);
     const push = (first.radius + fit.pad) * fit.grow * config.step;
     const sides = [
     {
@@ -203,10 +205,12 @@ export function step()
     if (!state.autododge) return false;
     const bm = battle();
     if (!bm) return false;
+    const self = ownCharacter();
+    if (!self) return false;
     const vector = dodgeVector();
     if (!vector) return false;
-    const x = getX(bm) + vector.dx;
-    const y = getY(bm) + vector.dy;
+    const x = getX(self) + vector.dx;
+    const y = getY(self) + vector.dy;
     sendClientInput(bm, config.moveType, x, y);
     return true;
 }

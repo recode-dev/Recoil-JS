@@ -5,6 +5,7 @@ import
     fn,
     off,
     constant,
+    ptr32,
     ptrAt,
     i32At
 }
@@ -21,13 +22,27 @@ var generation = 0;
 
 export function moduleBase()
 {
-    const main = Process.mainModule || Process.enumerateModules()[0];
-    return main.base;
+    try
+    {
+        if (Process.mainModule) return Process.mainModule.base;
+    }
+    catch (e)
+    {}
+    try
+    {
+        const modules = Process.enumerateModules();
+        if (modules.length) return modules[0].base;
+    }
+    catch (e)
+    {}
+    return null;
 }
 
 export function boot()
 {
-    setBase(moduleBase());
+    const base = moduleBase();
+    if (!base) throw new Error("module base not found");
+    setBase(base);
     resolveAll();
     return true;
 }
@@ -98,8 +113,17 @@ export function tileMap(battle)
 
 export function isProjectile(pointer)
 {
-    const data = ptrAt(pointer, off("LogicGameObjectClient_getData"));
-    if (data.isNull()) return false;
+    if (!pointer || pointer.isNull()) return false;
+    let data = null;
+    try
+    {
+        data = ptr32("LogicGameObjectClient_getData")(pointer);
+    }
+    catch (e)
+    {
+        return false;
+    }
+    if (!data || data.isNull()) return false;
     return vtableOf(data).equals(constant("VTABLE_PROJECTILE_DATA"));
 }
 

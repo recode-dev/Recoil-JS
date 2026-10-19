@@ -6,7 +6,8 @@ import
 from "./functions.js";
 import
 {
-    logInfo
+    logInfo,
+    logWarn
 }
 from "../utils/logger.js";
 
@@ -17,25 +18,55 @@ var stamp = 0;
 var dirty = true;
 var skill = null;
 var attached = [];
+var failed = [];
+
+function attachWith(resolve, label, callbacks)
+{
+    try
+    {
+        attached.push(Interceptor.attach(resolve(label), callbacks));
+        return true;
+    }
+    catch (e)
+    {
+        failed.push(label);
+        logWarn("hook failed",
+        {
+            hook: label,
+            reason: e && e.message ? e.message : String(e)
+        });
+        return false;
+    }
+}
+
+function attach(label, callbacks)
+{
+    return attachWith(ic, label, callbacks);
+}
+
+function attachRva(label, callbacks)
+{
+    return attachWith(fn, label, callbacks);
+}
 
 export function install()
 {
-    attached.push(Interceptor.attach(ic("LogicBattleModeClient_update"),
+    attach("LogicBattleModeClient_update",
     {
         onEnter(args)
         {
             battle = args[0];
             frames++;
         }
-    }));
-    attached.push(Interceptor.attach(ic("LogicProjectileClient_updateTarget"),
+    });
+    attachRva("LogicProjectileClient_updateTarget",
     {
         onEnter()
         {
             stamp = frames;
         }
-    }));
-    attached.push(Interceptor.attach(ic("LogicProjectileClient_ctor"),
+    });
+    attach("LogicProjectileClient_ctor",
     {
         onEnter(args)
         {
@@ -45,26 +76,35 @@ export function install()
         {
             if (this.self && !this.self.isNull()) live.add(this.self.toString());
         }
-    }));
-    attached.push(Interceptor.attach(ic("LogicProjectileClient_destruct"),
+    });
+    attach("LogicProjectileClient_destruct",
     {
         onEnter(args)
         {
             if (args[0] && !args[0].isNull()) live.delete(args[0].toString());
         }
-    }));
-    attached.push(Interceptor.attach(ic("LogicTile__setData"),
+    });
+    attach("LogicTile__setData",
     {
         onEnter()
         {
             dirty = true;
         }
-    }));
+    });
     logInfo("hooks installed",
     {
-        count: attached.length
+        count: attached.length,
+        failed: failed.length
     });
-    return attached.length;
+    return {
+        attached: attached.length,
+        failed: failed.slice()
+    };
+}
+
+export function failedHooks()
+{
+    return failed.slice();
 }
 
 export function battlePtr()
