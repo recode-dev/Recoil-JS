@@ -2,7 +2,8 @@ import
 {
     rva_offsets,
     structs_offsets,
-    constant_offsets
+    constant_offsets,
+    interceptor_offsets
 }
 from "./offsets.js";
 import
@@ -16,6 +17,7 @@ var base = null;
 var native = {};
 var struct = {};
 var constants = {};
+var intercept = {};
 
 function fail(name)
 {
@@ -47,6 +49,10 @@ export function resolveAll()
     {
         constants[name] = base.add(constant_offsets[name]);
     }
+    for (const name in interceptor_offsets)
+    {
+        intercept[name] = base.add(interceptor_offsets[name]);
+    }
     logInfo("offsets resolved",
     {
         count: Object.keys(native).length
@@ -66,6 +72,13 @@ export function off(name)
     const value = struct[name];
     if (value === undefined) throw new Error("missing struct " + name);
     return value;
+}
+
+export function ic(name)
+{
+    const ptr = intercept[name];
+    if (!ptr) throw new Error("missing hook " + name);
+    return ptr;
 }
 
 export function constant(name)

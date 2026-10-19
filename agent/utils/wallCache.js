@@ -1,5 +1,11 @@
 import
 {
+    wallsDirty,
+    wallsClean
+}
+from "../core/hooks.js";
+import
+{
     tileGrid,
     grid,
     blockedMove,
@@ -36,6 +42,11 @@ export function build(battle)
 
 export function ensure(battle)
 {
+    if (wallsDirty())
+    {
+        build(battle);
+        wallsClean();
+    }
     if (!grid() || Date.now() - last > refreshMs)
     {
         build(battle);

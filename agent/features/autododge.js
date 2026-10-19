@@ -12,9 +12,15 @@ from "../core/functions.js";
 import
 {
     objects,
-    isProjectileData
+    isProjectileData,
+    isProjectile
 }
 from "../core/scanner.js";
+import
+{
+    projectileAddrs
+}
+from "../core/hooks.js";
 import
 {
     logInfo
@@ -148,7 +154,9 @@ export function scan()
     const sx = getX(bm);
     const sy = getY(bm);
     const found = [];
-    for (const item of objects(bm))
+    const live = projectileAddrs();
+    const source = live.length ? live.map((address) => ptr(address)) : objects(bm);
+    for (const item of source)
     {
         const info = threat(item);
         if (!info) continue;

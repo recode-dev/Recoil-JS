@@ -18,6 +18,7 @@ agent/core/offsets.js      RVAs, struct offsets, constant tables
 agent/core/functions.js    offset resolution and native wrappers
 agent/core/scanner.js      module base, object manager, tile grid, line of sight
 agent/core/dataTables.js   name, radius, speed, skills, projectile and area data
+agent/core/hooks.js        interceptor table: update, skills, projectiles, tiles
 agent/core/input.js        ClientInput construction and addInput
 agent/features/aimbot.js   target selection, lead, wall check, fire
 agent/features/autododge.js projectile scan, threat math, dodge vector
@@ -36,6 +37,7 @@ flags()
 target()
 threats()
 world()
+hooks()
 walls()
 grid()
 screen(pointer)

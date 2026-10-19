@@ -96,6 +96,13 @@ export function tileMap(battle)
     return map;
 }
 
+export function isProjectile(pointer)
+{
+    const data = ptrAt(pointer, off("LogicGameObjectClient_getData"));
+    if (data.isNull()) return false;
+    return vtableOf(data).equals(constant("VTABLE_PROJECTILE_DATA"));
+}
+
 export function tileGrid(battle)
 {
     const map = tileMap(battle);

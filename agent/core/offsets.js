@@ -91,6 +91,16 @@ export const structs_offsets = Object.freeze(
     BattleScreen_aimY: 0xa84
 });
 
+export const interceptor_offsets = Object.freeze(
+{
+    LogicBattleModeClient_update: 0xac1ee8,
+    BattleScreen_activateSkill: 0x7a0084,
+    BattleScreen_getClosestTargetForAutoshoot: 0x7b67ec,
+    LogicProjectileClient_ctor: 0xa2d8cc,
+    LogicProjectileClient_destruct: 0x9f4fe8,
+    LogicTile__setData: 0x9401fc
+});
+
 export const constant_offsets = Object.freeze(
 {
     VTABLE_PROJECTILE_DATA: 0xff3b18,

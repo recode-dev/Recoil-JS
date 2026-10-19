@@ -45,6 +45,16 @@ import
     status
 }
 from "./utils/wallCache.js";
+import
+{
+    install as installHooks,
+    battlePtr,
+    projectileCount,
+    framesCount,
+    lastSkill,
+    closestTarget
+}
+from "./core/hooks.js";
 import * as aimbot from "./features/aimbot.js";
 import * as autododge from "./features/autododge.js";
 
@@ -113,6 +123,7 @@ function boot()
         initTables();
     });
     aimbot.installBattleCapture();
+    installHooks();
     aimbot.init();
     autododge.init();
     start();
@@ -166,17 +177,29 @@ rpc.exports =
     },
     world()
     {
-        const bm = aimbot.battle();
+        const bm = aimbot.battle() || battlePtr();
         if (!bm) return null;
         return JSON.stringify(
         {
             ownIndex: ownIndex(bm),
             ownTeam: ownTeam(bm),
             objects: objects(bm).length,
+            projectiles: projectileCount(),
+            frames: framesCount(),
             walls: status(),
             signature: signature(bm),
             moveType: clientType(2),
             scale: commandScale(0)
+        });
+    },
+    hooks()
+    {
+        return JSON.stringify(
+        {
+            frames: framesCount(),
+            projectiles: projectileCount(),
+            skill: lastSkill() ? lastSkill().toString() : null,
+            closest: closestTarget() ? closestTarget().toString() : null
         });
     },
     screen(pointer)
