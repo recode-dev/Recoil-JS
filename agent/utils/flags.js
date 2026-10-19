@@ -7,21 +7,7 @@ from "./logger.js";
 
 var FEATURE_NAMES = [
     "aimbot",
-    "autododge",
-    "esp",
-    "spinner",
-    "killaura",
-    "camera",
-    "spray",
-    "pin",
-    "brawltv",
-    "spec",
-    "chatspam",
-    "fps",
-    "fpsunlock",
-    "gradient",
-    "holdshoot",
-    "speedhack"
+    "autododge"
 ];
 
 var FLAG_OF = {};
@@ -29,7 +15,7 @@ export var state = {};
 FEATURE_NAMES.forEach((name, index) =>
 {
     FLAG_OF[name] = 1 << index;
-    state[name] = false;
+    state[name] = true;
 });
 
 export function registerFeature(name)
@@ -37,7 +23,7 @@ export function registerFeature(name)
     if (name in state) return;
     FLAG_OF[name] = 1 << FEATURE_NAMES.length;
     FEATURE_NAMES.push(name);
-    state[name] = false;
+    state[name] = true;
 }
 
 export var FLAG_AIMBOT = FLAG_OF.aimbot;

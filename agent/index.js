@@ -1,3 +1,5 @@
+import * as aimbot from "./features/aimbot.js";
+import * as autododge from "./features/autododge.js";
 import
 {
     getBase
@@ -55,8 +57,6 @@ import
     stampValue
 }
 from "./core/hooks.js";
-import * as aimbot from "./features/aimbot.js";
-import * as autododge from "./features/autododge.js";
 
 var timer = null;
 var interval = 8;
