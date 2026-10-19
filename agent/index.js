@@ -52,7 +52,6 @@ import
     projectileCount,
     framesCount,
     lastSkill,
-    closestTarget,
     stampValue
 }
 from "./core/hooks.js";
@@ -126,6 +125,7 @@ function boot()
     aimbot.installBattleCapture();
     installHooks();
     aimbot.init();
+    aimbot.installAimHooks();
     autododge.init();
     start();
     return true;
@@ -200,8 +200,7 @@ rpc.exports =
             frames: framesCount(),
             projectiles: projectileCount(),
             stamp: stampValue(),
-            skill: lastSkill() ? lastSkill().toString() : null,
-            closest: closestTarget() ? closestTarget().toString() : null
+            skill: lastSkill() ? lastSkill().toString() : null
         });
     },
     screen(pointer)

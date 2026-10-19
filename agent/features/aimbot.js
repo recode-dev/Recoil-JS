@@ -61,6 +61,7 @@ var getY = null;
 var getOwnTeam = null;
 var setPrediction = null;
 var battlePtr = null;
+var bestPtr = null;
 var config =
 {
     range: 1200,
@@ -89,6 +90,35 @@ export function installBattleCapture()
             }
         });
         logInfo("battle capture installed");
+    });
+}
+
+export function installAimHooks()
+{
+    return setupSafe("aim hooks", () =>
+    {
+        Interceptor.attach(fn("BattleScreen_activateSkill"),
+        {
+            onEnter(args)
+            {
+                if (!state.aimbot) return;
+                const point = aimPoint();
+                if (!point) return;
+                args[1] = ptr(point.x);
+                args[2] = ptr(point.y);
+                bestPtr = point.ptr;
+            }
+        });
+        Interceptor.attach(fn("BattleScreen_getClosestTargetForAutoshoot"),
+        {
+            onLeave(retval)
+            {
+                if (!state.aimbot) return;
+                if (!bestPtr || bestPtr.isNull()) return;
+                retval.replace(bestPtr);
+            }
+        });
+        logInfo("aim hooks installed");
     });
 }
 

@@ -15,10 +15,8 @@ var live = new Set();
 var frames = 0;
 var stamp = 0;
 var dirty = true;
-var closest = null;
 var skill = null;
 var attached = [];
-var closestNative = null;
 
 export function install()
 {
@@ -62,20 +60,6 @@ export function install()
             dirty = true;
         }
     }));
-    closestNative = new NativeFunction(ic("BattleScreen_getClosestTargetForAutoshoot"), "pointer", ["pointer", "pointer", "pointer", "pointer"]);
-    Interceptor.replace(ic("BattleScreen_getClosestTargetForAutoshoot"), new NativeCallback(function(a, b, c, d)
-    {
-        const result = closestNative(a, b, c, d);
-        closest = result && !result.isNull() ? result : null;
-        return result;
-    }, "pointer", ["pointer", "pointer", "pointer", "pointer"]));
-    attached.push(Interceptor.attach(ic("BattleScreen_activateSkill"),
-    {
-        onEnter(args)
-        {
-            skill = args[1] && !args[1].isNull() ? args[1] : null;
-        }
-    }));
     logInfo("hooks installed",
     {
         count: attached.length
@@ -116,11 +100,6 @@ export function wallsDirty()
 export function wallsClean()
 {
     dirty = false;
-}
-
-export function closestTarget()
-{
-    return closest;
 }
 
 export function lastSkill()
