@@ -1,13 +1,20 @@
 import
 {
+    fn,
     off,
     i32,
-    ptr32,
     i32At,
+    ptr32,
     ptrAt,
-    constant
+    boolAt
 }
 from "../core/functions.js";
+import
+{
+    objects,
+    isProjectileData
+}
+from "../core/scanner.js";
 import
 {
     logInfo
@@ -29,9 +36,19 @@ import
 from "../helpers/dodge_kinds.js";
 import
 {
-    canonBrawlerName
+    nameOf,
+    spawnAreaEffect,
+    areaRadius,
+    areaTime,
+    dataName
 }
-from "../utils/brawlerName.js";
+from "../core/dataTables.js";
+import
+{
+    clearPath,
+    ensure
+}
+from "../utils/wallCache.js";
 import
 {
     battle
@@ -50,8 +67,7 @@ var getSpeed = null;
 var getRadius = null;
 var isBeam = null;
 var getTargetX = null;
-var getName = null;
-var projectileData = null;
+var hooks = [];
 var config =
 {
     range: 900,
@@ -66,88 +82,61 @@ export function init(options)
     {
         getX = i32("LogicGameObjectClient_getX");
         getY = i32("LogicGameObjectClient_getY");
-        getData = ptr32("LogicGameObjectClient_getData");
+        getData = ptr32("LogicProjectileClient_getData");
         getSpeed = i32("LogicProjectileData_getSpeed");
         getRadius = i32("LogicProjectileData_getRadius");
         isBeam = i32("LogicProjectileData__isBeam");
         getTargetX = i32("LogicProjectileClient_getTargetX");
-        getName = ptr32("LogicData_getName");
-        projectileData = constant("VTABLE_PROJECTILE_DATA");
         if (options) Object.assign(config, options);
+        hooks.push(Interceptor.attach(fn("LogicProjectileClient_updateTarget"),
+        {
+            onLeave()
+            {
+                config.stamp = Date.now();
+            }
+        }));
+        hooks.push(Interceptor.attach(fn("LogicProjectileClient_updateMotion"),
+        {
+            onLeave()
+            {
+                config.stamp = Date.now();
+            }
+        }));
         logInfo("autododge ready");
     });
-}
-
-function isProjectile(pointer)
-{
-    const data = getData(pointer);
-    if (data.isNull()) return null;
-    const vtable = data.readPointer();
-    if (!vtable.equals(projectileData)) return null;
-    return data;
-}
-
-function list()
-{
-    const bm = battle();
-    if (!bm) return [];
-    const manager = ptrAt(bm, off("BattleMode_objectManagerPtr"));
-    if (manager.isNull()) return [];
-    const array = ptrAt(manager, off("ObjectManager_objectsArray"));
-    const count = i32At(manager, off("ObjectManager_count"));
-    const stride = off("ObjectManager_ptrStride");
-    if (array.isNull() || count <= 0 || count > 512) return [];
-    const out = [];
-    for (let i = 0; i < count; i++)
-    {
-        const item = array.add(i * stride).readPointer();
-        if (item.isNull()) continue;
-        const data = isProjectile(item);
-        if (!data) continue;
-        out.push(item);
-    }
-    return out;
-}
-
-function nameOf(data)
-{
-    try
-    {
-        const pointer = getName(data);
-        if (pointer.isNull()) return "";
-        return canonBrawlerName(pointer.readCString());
-    }
-    catch (e)
-    {
-        return "";
-    }
 }
 
 function threat(item)
 {
     const data = getData(item);
-    const speed = getSpeed(data);
+    if (!isProjectileData(data)) return null;
+    const speed = i32At(data, off("LogicProjectileData_speed")) || getSpeed(data);
     if (speed <= 0) return null;
     const px = getX(item);
     const py = getY(item);
-    const tx = getTargetX(item);
+    const tx = i32At(item, off("LogicProjectileClient_targetX")) || getTargetX(item);
     const ty = i32At(item, off("LogicProjectileClient_targetY"));
     const dx = tx - px;
     const dy = ty - py;
     const len = Math.sqrt(dx * dx + dy * dy);
     if (!len) return null;
+    const area = ptrAt(data, off("LogicProjectileData_spawnAreaEffect"));
+    const hasArea = !area.isNull();
     return {
         ptr: item,
+        team: i32At(item, off("LogicProjectileClient_ownerTeam")),
         speed,
-        radius: getRadius(data),
-        beam: isBeam(data) !== 0,
+        radius: i32At(data, off("LogicProjectileData_radius")) || getRadius(data),
+        beam: boolAt(data, off("LogicProjectileData_isBeam")) || isBeam(data) !== 0,
         x: px,
         y: py,
         tx,
         ty,
         ux: dx / len,
         uy: dy / len,
-        eta: len / speed
+        area: hasArea ? i32At(area, off("AreaEffectData_radius")) || areaRadius(area) : 0,
+        areaTime: hasArea ? i32At(area, off("AreaEffectData_activeTimeMs")) || areaTime(area) : 0,
+        name: dataName(item) || nameOf(data)
     };
 }
 
@@ -155,19 +144,18 @@ export function scan()
 {
     const bm = battle();
     if (!bm) return [];
-    const self = bm;
-    const sx = getX(self);
-    const sy = getY(self);
+    ensure(bm);
+    const sx = getX(bm);
+    const sy = getY(bm);
     const found = [];
-    for (const item of list())
+    for (const item of objects(bm))
     {
         const info = threat(item);
         if (!info) continue;
-        info.dist = Math.sqrt((info.tx - sx) * (info.tx - sx) + (info.ty - sy) * (info.ty - sy));
-        info.name = nameOf(getData(item));
-        info.eta = info.dist / info.speed;
-        if (info.dist > config.range) continue;
-        if (info.eta > config.horizon) continue;
+        const dist = Math.sqrt((info.tx - sx) * (info.tx - sx) + (info.ty - sy) * (info.ty - sy));
+        info.dist = dist;
+        info.eta = info.speed > 0 ? dist / info.speed : 99;
+        if (dist > config.range || info.eta > config.horizon) continue;
         found.push(info);
     }
     found.sort((a, b) => a.eta - b.eta);
@@ -179,15 +167,33 @@ export function dodgeVector()
     const threats = scan();
     if (!threats.length) return null;
     const first = threats[0];
-    const kind = kindOf(first.name);
     const fit = FITS[fitOf(first.name)] || FITS.broad;
-    const side = (first.ux * 0 - first.uy) >= 0 ? 1 : -1;
     const push = (first.radius + fit.pad) * fit.grow * config.step;
+    const sides = [
+    {
+        dx: -first.uy * push,
+        dy: first.ux * push
+    },
+    {
+        dx: first.uy * push,
+        dy: -first.ux * push
+    }];
+    for (const side of sides)
+    {
+        const x = Math.round(first.tx + side.dx);
+        const y = Math.round(first.ty + side.dy);
+        if (clearPath(first.x, first.y, x, y)) return {
+            threat: first,
+            kind: kindOf(first.name),
+            dx: Math.round(side.dx),
+            dy: Math.round(side.dy)
+        };
+    }
     return {
         threat: first,
-        kind,
-        dx: Math.round(-first.uy * side * push),
-        dy: Math.round(first.ux * side * push)
+        kind: kindOf(first.name),
+        dx: Math.round(sides[0].dx),
+        dy: Math.round(sides[0].dy)
     };
 }
 

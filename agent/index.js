@@ -1,15 +1,32 @@
 import
 {
-    setBase,
-    resolveAll,
     getBase
 }
 from "./core/functions.js";
 import
 {
+    boot as bootCore,
+    moduleBase,
+    objects,
+    tileGrid
+}
+from "./core/scanner.js";
+import
+{
     initInput
 }
 from "./core/input.js";
+import
+{
+    init as initTables,
+    ownIndex,
+    ownTeam,
+    signature,
+    clientType,
+    commandScale,
+    aimPoint
+}
+from "./core/dataTables.js";
 import
 {
     logInfo,
@@ -19,21 +36,20 @@ from "./utils/logger.js";
 import
 {
     state,
-    setState,
     setupSafe
 }
 from "./utils/flags.js";
+import
+{
+    build,
+    status
+}
+from "./utils/wallCache.js";
 import * as aimbot from "./features/aimbot.js";
 import * as autododge from "./features/autododge.js";
 
 var timer = null;
 var interval = 8;
-
-function base()
-{
-    const module = Process.mainModule || Process.enumerateModules()[0];
-    return module.base;
-}
 
 function loop()
 {
@@ -70,34 +86,37 @@ function loop()
 
 function start()
 {
-    if (timer) return;
+    if (timer) return false;
     timer = setInterval(loop, interval);
     logInfo("loop started",
     {
         interval
     });
+    return true;
 }
 
 function stop()
 {
-    if (!timer) return;
+    if (!timer) return false;
     clearInterval(timer);
     timer = null;
     logInfo("loop stopped");
+    return true;
 }
 
 function boot()
 {
     setupSafe("core", () =>
     {
-        setBase(base());
-        resolveAll();
+        bootCore();
         initInput();
+        initTables();
     });
     aimbot.installBattleCapture();
     aimbot.init();
     autododge.init();
     start();
+    return true;
 }
 
 rpc.exports =
@@ -105,6 +124,10 @@ rpc.exports =
     boot,
     start,
     stop,
+    base()
+    {
+        return moduleBase().toString();
+    },
     toggle(name, value)
     {
         if (name === "aimbot") return aimbot.toggle(value);
@@ -137,8 +160,47 @@ rpc.exports =
             speed: item.speed,
             beam: item.beam,
             eta: item.eta,
+            area: item.area,
             name: item.name
         })));
+    },
+    world()
+    {
+        const bm = aimbot.battle();
+        if (!bm) return null;
+        return JSON.stringify(
+        {
+            ownIndex: ownIndex(bm),
+            ownTeam: ownTeam(bm),
+            objects: objects(bm).length,
+            walls: status(),
+            signature: signature(bm),
+            moveType: clientType(2),
+            scale: commandScale(0)
+        });
+    },
+    screen(pointer)
+    {
+        return JSON.stringify(aimPoint(ptr(pointer)));
+    },
+    walls()
+    {
+        const bm = aimbot.battle();
+        if (!bm) return null;
+        build(bm);
+        return JSON.stringify(status());
+    },
+    grid()
+    {
+        const bm = aimbot.battle();
+        if (!bm) return null;
+        const map = tileGrid(bm);
+        if (!map) return null;
+        return JSON.stringify(
+        {
+            width: map.width,
+            height: map.height
+        });
     },
     burst(count, ms)
     {

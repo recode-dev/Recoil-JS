@@ -5,10 +5,15 @@ import
     i32,
     ptr32,
     i32At,
-    ptrAt,
-    boolAt
+    ptrAt
 }
 from "../core/functions.js";
+import
+{
+    objects,
+    lineClear
+}
+from "../core/scanner.js";
 import
 {
     logInfo,
@@ -29,9 +34,21 @@ import
 from "../helpers/aim_lead.js";
 import
 {
-    canonBrawlerName
+    nameOf,
+    collisionRadius,
+    castingRange,
+    isImmune,
+    dead,
+    weaponSkill,
+    skillData
 }
-from "../utils/brawlerName.js";
+from "../core/dataTables.js";
+import
+{
+    clearShot,
+    ensure
+}
+from "../utils/wallCache.js";
 import
 {
     sendClientInput
@@ -41,14 +58,14 @@ from "../core/input.js";
 var getOwnCharacter = null;
 var getX = null;
 var getY = null;
-var getData = null;
-var getGlobalID = null;
-var getName = null;
+var getOwnTeam = null;
+var setPrediction = null;
 var battlePtr = null;
 var config =
 {
     range: 1200,
     lead: true,
+    wallCheck: true,
     attackType: 0xa
 };
 
@@ -62,6 +79,8 @@ export function installBattleCapture()
     return setupSafe("battle", () =>
     {
         getOwnCharacter = ptr32("LogicBattleModeClient_getOwnCharacter");
+        getOwnTeam = i32("LogicBattleModeClient_getOwnPlayerTeam");
+        setPrediction = new NativeFunction(fn("LogicBattleModeClient_setClientPredictionMoveTo"), "void", ["pointer", "int", "int", "bool"]);
         Interceptor.attach(fn("LogicBattleModeClient_getOwnCharacter"),
         {
             onEnter(args)
@@ -77,36 +96,11 @@ export function init(options)
 {
     return setupSafe("aimbot", () =>
     {
-        if (!getX)
-        {
-            getX = i32("LogicGameObjectClient_getX");
-            getY = i32("LogicGameObjectClient_getY");
-            getData = ptr32("LogicGameObjectClient_getData");
-            getGlobalID = i32("LogicGameObjectClient_getGlobalID");
-            getName = ptr32("LogicData_getName");
-        }
+        getX = i32("LogicGameObjectClient_getX");
+        getY = i32("LogicGameObjectClient_getY");
         if (options) Object.assign(config, options);
         logInfo("aimbot ready");
     });
-}
-
-function objects()
-{
-    const bm = battlePtr;
-    if (!bm) return [];
-    const manager = ptrAt(bm, off("BattleMode_objectManagerPtr"));
-    if (manager.isNull()) return [];
-    const array = ptrAt(manager, off("ObjectManager_objectsArray"));
-    const count = i32At(manager, off("ObjectManager_count"));
-    const stride = off("ObjectManager_ptrStride");
-    if (array.isNull() || count <= 0 || count > 512) return [];
-    const list = [];
-    for (let i = 0; i < count; i++)
-    {
-        const item = array.add(i * stride).readPointer();
-        if (!item.isNull()) list.push(item);
-    }
-    return list;
 }
 
 function teamOf(pointer)
@@ -116,31 +110,34 @@ function teamOf(pointer)
 
 function alive(pointer)
 {
-    if (boolAt(pointer, off("GameObj_deadFlag"))) return false;
-    return getGlobalID(pointer) !== 0;
+    if (dead(pointer)) return false;
+    if (isImmune(pointer)) return false;
+    return true;
 }
 
-function nameOf(pointer)
+function rangeOf(character)
 {
     try
     {
-        const data = getData(pointer);
-        if (data.isNull()) return "";
-        const pointerName = getName(data);
-        if (pointerName.isNull()) return "";
-        return canonBrawlerName(pointerName.readCString());
+        const skill = weaponSkill(character);
+        if (skill.isNull()) return config.range;
+        const data = skillData(skill);
+        if (!data) return config.range;
+        const value = castingRange(data);
+        if (value <= 0) return config.range;
+        return value;
     }
     catch (e)
     {
-        return "";
+        return config.range;
     }
 }
 
-function distSq(ax, ay, bx, by)
+export function predict(x, y)
 {
-    const dx = ax - bx;
-    const dy = ay - by;
-    return dx * dx + dy * dy;
+    if (!battlePtr) return false;
+    setPrediction(battlePtr, x, y, true);
+    return true;
 }
 
 export function pickTarget()
@@ -149,31 +146,32 @@ export function pickTarget()
     if (!bm) return null;
     const self = getOwnCharacter(bm);
     if (self.isNull()) return null;
-    const ownTeam = teamOf(self);
+    const own = getOwnTeam(bm);
     const selfX = getX(self);
     const selfY = getY(self);
+    ensure(bm);
     let best = null;
-    let bestDist = config.range * config.range;
-    for (const item of objects())
+    let bestDist = rangeOf(self) * rangeOf(self);
+    for (const item of objects(bm))
     {
         if (item.equals(self)) continue;
         if (!alive(item)) continue;
-        if (teamOf(item) === ownTeam) continue;
+        if (teamOf(item) === own) continue;
         const x = getX(item);
         const y = getY(item);
-        const d = distSq(selfX, selfY, x, y);
-        if (d < bestDist)
-        {
-            bestDist = d;
-            best = item;
-        }
+        const d = (selfX - x) * (selfX - x) + (selfY - y) * (selfY - y);
+        if (d >= bestDist) continue;
+        if (config.wallCheck && !clearShot(selfX, selfY, x, y)) continue;
+        bestDist = d;
+        best = item;
     }
     if (!best) return null;
     return {
         ptr: best,
         x: getX(best),
         y: getY(best),
-        name: nameOf(best)
+        name: nameOf(best.readPointer().isNull() ? best : best),
+        radius: collisionRadius(best)
     };
 }
 
@@ -183,16 +181,17 @@ export function aimPoint()
     if (!bm) return null;
     const target = pickTarget();
     if (!target) return null;
-    if (!config.lead) return target;
     const self = getOwnCharacter(bm);
-    const lead = leadOf(target.name);
+    const selfX = getX(self);
+    const selfY = getY(self);
+    const lead = config.lead ? leadOf(target.name) : 0;
     return {
         ptr: target.ptr,
         x: target.x,
         y: target.y,
         lead,
-        selfX: getX(self),
-        selfY: getY(self)
+        selfX,
+        selfY
     };
 }
 
@@ -203,6 +202,7 @@ export function fire()
     if (!point) return false;
     const ok = sendClientInput(battlePtr, config.attackType, point.x, point.y);
     if (!ok) logWarn("aimbot fire failed");
+    else predict(point.x, point.y);
     return ok;
 }
 
