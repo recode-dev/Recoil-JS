@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import array
 import struct
 import subprocess
 import sys
@@ -101,6 +102,77 @@ def branch_target(data, rva):
     return rva + imm * 4
 
 
+def branch_targets(text, vmaddr):
+    targets = set()
+    count = len(text) // 4
+    words = array.array("I")
+    words.frombytes(bytes(text[:count * 4]))
+    for index in range(count):
+        ins = words[index]
+        here = vmaddr + index * 4
+        op = ins >> 26
+        if op in (0x05, 0x25):
+            offset = ins & MASK
+            if offset >> 25:
+                offset -= 1 << 26
+            targets.add(here + offset * 4)
+        elif (ins & 0xFF000010) == 0x54000000:
+            offset = (ins >> 5) & 0x7FFFF
+            if offset >> 18:
+                offset -= 1 << 19
+            targets.add(here + offset * 4)
+        elif (ins & 0x7E000000) == 0x34000000:
+            offset = (ins >> 5) & 0x7FFFF
+            if offset >> 18:
+                offset -= 1 << 19
+            targets.add(here + offset * 4)
+        elif (ins & 0x7E000000) == 0x36000000:
+            offset = (ins >> 5) & 0x3FFF
+            if offset >> 13:
+                offset -= 1 << 14
+            targets.add(here + offset * 4)
+    return targets
+
+
+def inbound_refs(data, segments, targets):
+    text = next((item for item in segments if item["name"] == "__TEXT"), None)
+    if text is None:
+        return 0
+    body = data[text["fileoff"]:text["fileoff"] + text["filesize"]]
+    hits = 0
+    for target in branch_targets(body, text["vmaddr"]):
+        for segment in targets:
+            if segment["vmaddr"] <= target < segment["vmaddr"] + segment["vmsize"]:
+                hits += 1
+                break
+    return hits
+
+
+def remove_segments(data, doomed):
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    sizeofcmds = struct.unpack_from("<I", data, 20)[0]
+    start = 32
+    cursor = start
+    kept = 0
+    out = bytearray()
+    for _ in range(ncmds):
+        cmd, size = struct.unpack_from("<II", data, cursor)
+        chunk = bytes(data[cursor:cursor + size])
+        if cmd == SEG_CMD:
+            name = chunk[8:24].split(b"\x00")[0].decode("utf-8", "replace")
+            if name in doomed:
+                cursor += size
+                continue
+        out += chunk
+        kept += 1
+        cursor += size
+    end = start + sizeofcmds
+    data[start:end] = out + bytes(end - start - len(out))
+    struct.pack_into("<I", data, 16, kept)
+    struct.pack_into("<I", data, 20, len(out))
+    return kept
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
@@ -108,6 +180,7 @@ def main():
     parser.add_argument("--tool", default="./gum-graft")
     parser.add_argument("--out", required=True)
     parser.add_argument("--report", default="graft-report.json")
+    parser.add_argument("--drop-dev", action="store_true", help="remove pre-existing __FRIDA_ segments when nothing references them")
     args = parser.parse_args()
 
     with open(args.offsets, "r", encoding="utf-8") as handle:
@@ -125,6 +198,19 @@ def main():
             raise SystemExit("unaligned rva 0x%x" % hook["rva"])
         if hook["rva"] >= text_limit:
             raise SystemExit("rva 0x%x outside __TEXT" % hook["rva"])
+
+    dropped = []
+    dev = [item for item in segments if item["name"].startswith(FRIDA)]
+    if args.drop_dev and dev:
+        hits = inbound_refs(data, segments, dev)
+        if hits:
+            sys.stdout.write("dev segments referenced by %d branches, keeping them\n" % hits)
+        else:
+            remove_segments(data, {item["name"] for item in dev})
+            dropped = [item["name"] for item in dev]
+            with open(args.binary, "wb") as handle:
+                handle.write(data)
+            segments, _ = parse_segments(data)
 
     stashed = rename_segments(data, lambda name: name.startswith(FRIDA), lambda name: STASH + name[len(FRIDA):])
     with open(args.binary, "wb") as handle:
@@ -184,6 +270,7 @@ def main():
         "size": len(data),
         "ncmds": ncmds,
         "stashed_segments": stashed,
+        "dropped_segments": dropped,
         "new_segment_index": new_index,
         "frida_text": hex(tramp["vmaddr"]) if tramp else None,
         "hooks": rows,
